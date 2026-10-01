@@ -1,0 +1,153 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Source+Sans+3:wght@400;500;600;700&display=swap');
+@import 'tailwindcss';
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+@theme inline {
+  --font-serif: 'Fraunces', Georgia, serif;
+  --font-sans: 'Source Sans 3', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --breakpoint-md: 720px;
+  --color-paper: var(--paper);
+  --color-raised: var(--raised);
+  --color-ink: var(--ink);
+  --color-soft: var(--soft);
+  --color-mute: var(--mute);
+  --color-rule: var(--rule);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-forest: var(--forest);
+  --color-forest-soft: var(--forest-soft);
+  --color-brass: var(--brass);
+  --color-brass-soft: var(--brass-soft);
+  --color-indigo: var(--indigo);
+  --color-alert: var(--alert);
+  --radius-reg: 3px;
+}
+
+:root,
+[data-theme='light'] {
+  --paper: #e9ebe3;
+  --raised: #f4f5f0;
+  --ink: #1b2430;
+  --soft: #3c4650;
+  --mute: #5c6b66;
+  --rule: #c7cbbe;
+  --indigo: #33507a;
+  --indigo-soft: #e4e9f1;
+  --forest: #2f5d50;
+  --forest-soft: #e1eae5;
+  --brass: #96692a;
+  --brass-soft: #f1e6d2;
+  --alert: #8c3b3b;
+  --on-accent: #f4f5f0;
+  --shadow: 0 1px 0 rgba(27, 36, 48, 0.06);
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  --paper: #1a2027;
+  --raised: #212832;
+  --ink: #eceae0;
+  --soft: #c7ccc2;
+  --mute: #9aa69e;
+  --rule: #3a4149;
+  --indigo: #8fadDD;
+  --indigo-soft: #262f3e;
+  --forest: #82c0a7;
+  --forest-soft: #212c28;
+  --brass: #d9a85c;
+  --brass-soft: #2e2a1e;
+  --alert: #d98080;
+  --on-accent: #1a2027;
+  --shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
+  color-scheme: dark;
+}
+
+[data-portal='admin'] {
+  --accent: var(--indigo);
+  --accent-soft: var(--indigo-soft);
+}
+[data-portal='teacher'] {
+  --accent: var(--forest);
+  --accent-soft: var(--forest-soft);
+}
+[data-portal='parent'] {
+  --accent: var(--brass);
+  --accent-soft: var(--brass-soft);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-serif);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    line-height: 1.2;
+  }
+  button,
+  select,
+  input,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+  button {
+    cursor: pointer;
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent, var(--indigo));
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--accent, var(--indigo));
+    color: var(--on-accent);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  *:hover {
+    scrollbar-color: var(--rule) transparent;
+  }
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--mute);
+}
+.skeleton {
+  background: var(--rule);
+  opacity: 0.55;
+  border-radius: 2px;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}

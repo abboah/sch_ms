@@ -1,0 +1,2146 @@
+openapi: 3.0.3
+info:
+  title: Homeroom API
+  version: 0.1.0
+  description: |
+    Contract shared by the Next.js web app and the Flutter app. Every route is scoped to the
+    caller's school and role by Postgres row-level security (see backend/migrations); the
+    "Roles" line on each operation says who is meant to call it, and the database enforces it.
+
+    **Conventions**
+    - Auth: `Authorization: Bearer <jwt>`. The API maps the token to `people.id` and sets `app.person_id`.
+    - IDs are UUIDs. Dates are `YYYY-MM-DD`; timestamps are RFC 3339 UTC. Money is a decimal string in GHS minor-unit-safe form (`"1850.00"`), never a float.
+    - Lists are cursor-paginated: `?limit=50&cursor=...` returns `{ items, next_cursor }`.
+    - Errors use `application/problem+json`. A row the caller may not see is reported as **404**, not 403, so existence is not leaked. 403 is for a visible resource the caller may not change.
+    - Writes from the offline apps send an `Idempotency-Key` header; replays return the original result.
+servers:
+  - url: https://api.homeroom.example/v1
+  - url: http://localhost:3000/api/v1
+security:
+  - bearer: []
+
+tags:
+  - { name: Auth }
+  - { name: Onboarding }
+  - { name: Me }
+  - { name: Overview }
+  - { name: Students }
+  - { name: Classes }
+  - { name: Attendance }
+  - { name: Gradebook }
+  - { name: Fees }
+  - { name: Messaging }
+  - { name: Announcements }
+  - { name: Homework }
+  - { name: Conferences }
+  - { name: Admin }
+
+paths:
+  # ------------------------------------------------------------------ auth
+  /auth/sessions:
+    post:
+      operationId: signInWithPassword
+      tags: [ Auth ]
+      summary: Sign in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ email, password ]
+              properties: { email: { type: string, format: email }, password: { type: string } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { $ref: '#/components/responses/SignInResult' }
+        '401': { $ref: '#/components/responses/Problem' }
+  /auth/otp:
+    post:
+      operationId: requestOtp
+      tags: [ Auth ]
+      summary: Request a one-time code by SMS (guardians without email)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ phone ]
+              properties: { phone: { type: string, example: '+233240000001' } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '204': { description: 'Code sent (always 204, whether or not the number exists)' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /auth/otp/verify:
+    post:
+      operationId: verifyOtp
+      tags: [ Auth ]
+      summary: Exchange a one-time code for a session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ phone, code ]
+              properties: { phone: { type: string }, code: { type: string, minLength: 6, maxLength: 6 } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { $ref: '#/components/responses/SignInResult' }
+        '401': { $ref: '#/components/responses/Problem' }
+  /auth/sessions/current:
+    delete:
+      operationId: signOut
+      tags: [ Auth ]
+      summary: Sign out
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '204': { description: 'Signed out' }
+
+  # ------------------------------------------------------------------ onboarding
+  /schools:
+    post:
+      operationId: createSchool
+      tags: [ Onboarding ]
+      summary: Create a school by redeeming a one-time invite code
+      description: |
+        No login: an operator mints `invite_code` out of band (`node src/cli.ts create-invite`)
+        and hands it to the school. Creates the school and its first admin, and sends that
+        admin an account-setup email or SMS the same way `POST /people` does. The code is
+        single-use and rejected once expired or already redeemed.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ invite_code, school_name, admin ]
+              properties:
+                invite_code: { type: string }
+                school_name: { type: string, maxLength: 200 }
+                timezone: { type: string, default: Africa/Accra }
+                admin:
+                  type: object
+                  required: [ full_name ]
+                  properties:
+                    full_name: { type: string, maxLength: 120 }
+                    email: { type: string, format: email }
+                    phone: { type: string, example: '+233240000001' }
+                  description: 'One of email or phone is required.'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { $ref: '#/components/responses/School' }
+        '429': { $ref: '#/components/responses/Problem' }
+
+  # ------------------------------------------------------------------ me
+  /me:
+    get:
+      operationId: getMe
+      tags: [ Me ]
+      summary: 'Who am I, and what can I switch between'
+      description: |
+        Roles: any. Guardians get `children` (drives the child switcher); teachers get `sections`.
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: The caller
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+  /me/notification_prefs:
+    get:
+      operationId: getNotificationPrefs
+      tags: [ Me ]
+      summary: Channels the caller receives alerts on
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Prefs', content: { application/json: { schema: { $ref: '#/components/schemas/NotificationPrefs' } } } }
+    put:
+      operationId: setNotificationPrefs
+      tags: [ Me ]
+      summary: Replace notification channel preferences
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/NotificationPrefs' } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Saved', content: { application/json: { schema: { $ref: '#/components/schemas/NotificationPrefs' } } } }
+  /me/push_tokens:
+    post:
+      operationId: registerPushToken
+      tags: [ Me ]
+      summary: Register a device for push
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ token, platform ]
+              properties:
+                token: { type: string }
+                platform: { type: string, enum: [ ios, android, web ] }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '204': { description: 'Registered (idempotent on token)' }
+  /me/push_tokens/{token}:
+    delete:
+      operationId: unregisterPushToken
+      tags: [ Me ]
+      summary: Unregister a device (call on sign-out)
+      parameters: [ { name: token, in: path, required: true, schema: { type: string } } ]
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '204': { description: 'Removed' }
+
+  # ------------------------------------------------------------------ overview (screen-shaped)
+  /admin/overview:
+    get:
+      operationId: getAdminOverview
+      tags: [ Overview ]
+      summary: Admin home
+      description: 'Roles: admin. Today''s attendance rate, unmarked registers, fees outstanding, recent announcements.'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Overview
+          content: { application/json: { schema: { $ref: '#/components/schemas/AdminOverview' } } }
+  /teacher/today:
+    get:
+      operationId: getTeacherToday
+      tags: [ Overview ]
+      summary: 'Teacher home, periods for a day with register status'
+      description: 'Roles: teacher.'
+      parameters: [ { name: date, in: query, schema: { type: string, format: date }, description: Defaults to today in the school's timezone } ]
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Periods in order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  date: { type: string, format: date }
+                  periods:
+                    type: array
+                    items: { $ref: '#/components/schemas/TodayPeriod' }
+                required: [ date, periods ]
+
+  # ------------------------------------------------------------------ students
+  /students:
+    get:
+      operationId: listStudents
+      tags: [ Students ]
+      summary: List students the caller may see
+      description: 'Roles: admin (all), teacher (own sections), guardian (own children).'
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: 'Name search' }
+        - { name: class_section_id, in: query, schema: { type: string, format: uuid } }
+        - { name: grade_level, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Page', content: { application/json: { schema: { $ref: '#/components/schemas/StudentPage' } } } }
+  /students/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getStudent
+      tags: [ Students ]
+      summary: Student profile
+      description: 'Roles: admin, teacher (own class), guardian (own child). Guardians and enrollment history included for admin.'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Student', content: { application/json: { schema: { $ref: '#/components/schemas/StudentDetail' } } } }
+        '404': { $ref: '#/components/responses/Problem' }
+  /students/{id}/summary:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getStudentSummary
+      tags: [ Students ]
+      summary: The one call a portal home screen needs
+      description: |
+        Roles: admin, teacher, guardian. Attendance rate, running grade per subject, balance.
+        `balance` and `pending_payments` are null for teachers. **The read is written to the audit log.**
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Summary', content: { application/json: { schema: { $ref: '#/components/schemas/StudentSummary' } } } }
+        '404': { $ref: '#/components/responses/Problem' }
+  /students/{id}/attendance:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getStudentAttendance
+      tags: [ Attendance ]
+      summary: A student's attendance history
+      description: 'Roles: admin, teacher (own class), guardian (own child). Drives the month calendar.'
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Records
+          content:
+            application/json:
+              schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/AttendanceRecord' } } }, required: [ items ] }
+  /students/{id}/grades:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getStudentGrades
+      tags: [ Gradebook ]
+      summary: A student's grades by subject
+      description: 'Roles: admin (view), teacher (own class), guardian (own child).'
+      parameters: [ { name: term_id, in: query, schema: { type: string, format: uuid } } ]
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Subjects with assessments and running grade
+          content:
+            application/json:
+              schema: { type: object, properties: { subjects: { type: array, items: { $ref: '#/components/schemas/SubjectGrades' } } } }
+  /students/{id}/homework:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getStudentHomework
+      tags: [ Homework ]
+      summary: Homework for a child's sections
+      description: 'Roles: guardian (own child), teacher, admin.'
+      parameters: [ { name: due_from, in: query, schema: { type: string, format: date } } ]
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Homework
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Homework' } } }, required: [ items ] } } }
+  /students/{id}/invoices:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getStudentInvoices
+      tags: [ Fees ]
+      summary: Invoices with payment history and derived overdue flag
+      description: 'Roles: admin, guardian (own child). Teachers get 404.'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Invoices
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Invoice' } } }, required: [ items ] } } }
+
+  # ------------------------------------------------------------------ classes
+  /terms:
+    get:
+      operationId: listTerms
+      tags: [ Classes ]
+      summary: Terms for the school
+      description: 'Roles: any.'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Terms
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Term' } } }, required: [ items ] } } }
+    post:
+      operationId: createTerm
+      tags: [ Admin ]
+      summary: Create a term
+      description: 'Roles: admin.'
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TermInput' } } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { description: 'Created', content: { application/json: { schema: { $ref: '#/components/schemas/Term' } } } }
+  /terms/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      operationId: updateTerm
+      tags: [ Admin ]
+      summary: 'Edit a term, or close it'
+      description: 'Roles: admin. `closed: true` locks teacher edits for every section in the term.'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TermInput' } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Updated', content: { application/json: { schema: { $ref: '#/components/schemas/Term' } } } }
+  /class_sections:
+    get:
+      operationId: listClassSections
+      tags: [ Classes ]
+      summary: Class sections the caller can see
+      description: 'Roles: admin (all), teacher (taught), guardian (children''s).'
+      parameters: [ { name: term_id, in: query, schema: { type: string, format: uuid } } ]
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Sections
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/ClassSection' } } }, required: [ items ] } } }
+    post:
+      operationId: createClassSection
+      tags: [ Admin ]
+      summary: Create a class section
+      description: 'Roles: admin.'
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ClassSectionInput' } } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { description: 'Created', content: { application/json: { schema: { $ref: '#/components/schemas/ClassSection' } } } }
+  /class_sections/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getClassSection
+      tags: [ Classes ]
+      summary: 'Section with roster, teachers, attendance % and running average'
+      description: 'Roles: admin, teacher (taught).'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Section', content: { application/json: { schema: { $ref: '#/components/schemas/ClassSectionDetail' } } } }
+    patch:
+      operationId: updateClassSection
+      tags: [ Admin ]
+      summary: 'Edit a section, e.g. change the homeroom teacher'
+      description: 'Roles: admin.'
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ClassSectionInput' } } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Updated', content: { application/json: { schema: { $ref: '#/components/schemas/ClassSection' } } } }
+  /class_sections/{id}/periods:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getTimetable
+      tags: [ Classes ]
+      summary: Weekly timetable for a section
+      description: 'Roles: admin, teacher, guardian (child''s section).'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Periods
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Period' } } }, required: [ items ] } } }
+    put:
+      operationId: setTimetable
+      tags: [ Admin ]
+      summary: Replace the section's timetable
+      description: 'Roles: admin.'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/PeriodInput' } } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Saved timetable', content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Period' } } }, required: [ items ] } } } }
+  /enrollments:
+    post:
+      operationId: enrollStudent
+      tags: [ Admin ]
+      summary: Assign a student to a class section
+      description: 'Roles: admin.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ student_id, class_section_id ]
+              properties: { student_id: { type: string, format: uuid }, class_section_id: { type: string, format: uuid } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { description: 'Enrolled', content: { application/json: { schema: { $ref: '#/components/schemas/Enrollment' } } } }
+        '409': { $ref: '#/components/responses/Problem' }
+  /enrollments/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    delete:
+      operationId: withdrawStudent
+      tags: [ Admin ]
+      summary: Withdraw a student from a section
+      description: 'Roles: admin. **Soft delete**: sets status to `withdrawn`; the row and its history stay for transcripts (the database has no DELETE policy).'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '204': { description: 'Withdrawn' }
+  /class_sections/{id}/students/import:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      operationId: importStudents
+      tags: [ Admin ]
+      summary: Bulk-create students and enrol them in this section
+      description: 'Roles: admin. Each row becomes a new student (there is no matching against existing people); build the array from a CSV client-side, one row per pupil.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ students ]
+              properties:
+                students:
+                  type: array
+                  minItems: 1
+                  maxItems: 300
+                  items:
+                    type: object
+                    required: [ full_name ]
+                    properties: { full_name: { type: string, maxLength: 120 } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201':
+          description: Created and enrolled
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/StudentRef' } } }, required: [ items ] } } }
+
+  # ------------------------------------------------------------------ attendance
+  /class_sections/{id}/attendance:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getRegister
+      tags: [ Attendance ]
+      summary: The register for one period and date
+      description: 'Roles: teacher (taught), admin. Returns every enrolled student, with `status: null` where nothing is marked yet.'
+      parameters:
+        - { name: date, in: query, required: true, schema: { type: string, format: date } }
+        - { name: period_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Register', content: { application/json: { schema: { $ref: '#/components/schemas/Register' } } } }
+    put:
+      operationId: submitRegister
+      tags: [ Attendance ]
+      summary: Mark a whole period at once (also the offline-sync endpoint)
+      description: |
+        Roles: teacher (taught, term open), admin. Upserts on (student, section, period, date), so it is safe to replay.
+        Each entry is validated independently and the response reports every outcome, so one bad row
+        (for example a student no longer enrolled) does not lose the rest of a queued offline register.
+        Conflict rule: **last write wins by `marked_at`**; an older queued write never overwrites a newer one.
+        Triggers `attendance.marked` for each absent or late student (push, else SMS).
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RegisterSubmission' } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Per-entry outcomes', content: { application/json: { schema: { $ref: '#/components/schemas/RegisterResult' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+  /attendance_records/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      operationId: correctAttendanceRecord
+      tags: [ Attendance ]
+      summary: Correct a single record
+      description: 'Roles: teacher (taught, term open), admin (any term).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { status: { $ref: '#/components/schemas/AttendanceStatus' }, note: { type: string, nullable: true } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Updated', content: { application/json: { schema: { $ref: '#/components/schemas/AttendanceRecord' } } } }
+  /schools/{id}/attendance_report:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getAttendanceReport
+      tags: [ Admin ]
+      summary: Date-ranged attendance register export
+      description: 'Roles: admin. Per-pupil counts over a date range. For a spreadsheet use the .csv variant.'
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date } }
+        - { name: class_section_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Report
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/AttendanceReport' } }
+  /schools/{id}/attendance_report.csv:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      operationId: getAttendanceReportCsv
+      tags:
+        - Admin
+      summary: Attendance register export as a CSV file
+      description: "Roles: admin. The same report as a download: one row per pupil, formula-safe, with a Content-Disposition filename."
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: class_section_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The file
+          content:
+            text/csv:
+              schema:
+                type: string
+        4XX:
+          $ref: "#/components/responses/Problem"
+        5XX:
+          $ref: "#/components/responses/Problem"
+
+  # ------------------------------------------------------------------ gradebook
+  /class_sections/{id}/gradebook:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getGradebook
+      tags: [ Gradebook ]
+      summary: Whole gradebook in one call (students × assessments)
+      description: 'Roles: teacher (taught), admin (view). Includes weights, scores and each student''s running average.'
+      parameters: [ { name: subject, in: query, schema: { type: string } } ]
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Gradebook', content: { application/json: { schema: { $ref: '#/components/schemas/Gradebook' } } } }
+  /grade_bands:
+    get:
+      operationId: listGradeBands
+      tags: [ Gradebook ]
+      summary: A school's grading scale
+      description: 'Roles: any. Ordered by min_score descending. A school with none configured returns an empty list, and running grades show as bare numbers.'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'List', content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/GradeBand' } } }, required: [ items ] } } } }
+    post:
+      operationId: createGradeBand
+      tags: [ Gradebook ]
+      summary: Add a band to the school's grading scale
+      description: 'Roles: admin.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ label, min_score, max_score ]
+              properties: { label: { type: string, example: A }, min_score: { type: number }, max_score: { type: number } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { description: 'Created', content: { application/json: { schema: { $ref: '#/components/schemas/GradeBand' } } } }
+        '422': { $ref: '#/components/responses/Problem' }
+  /grade_bands/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      operationId: updateGradeBand
+      tags: [ Gradebook ]
+      summary: Edit a band
+      description: 'Roles: admin.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { label: { type: string }, min_score: { type: number }, max_score: { type: number } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Updated', content: { application/json: { schema: { $ref: '#/components/schemas/GradeBand' } } } }
+        '404': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+    delete:
+      operationId: deleteGradeBand
+      tags: [ Gradebook ]
+      summary: Remove a band
+      description: 'Roles: admin. Nothing else references grade bands, so this is a hard delete.'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '204': { description: 'Removed' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /class_sections/{id}/assessments:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      operationId: createAssessment
+      tags: [ Gradebook ]
+      summary: Create a gradebook column
+      description: 'Roles: teacher (taught, term open).'
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AssessmentInput' } } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { description: 'Created', content: { application/json: { schema: { $ref: '#/components/schemas/Assessment' } } } }
+  /assessments/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      operationId: updateAssessment
+      tags: [ Gradebook ]
+      summary: 'Edit an assessment''s title, weight, max score or due date'
+      description: 'Roles: teacher (taught, term open).'
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AssessmentInput' } } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Updated', content: { application/json: { schema: { $ref: '#/components/schemas/Assessment' } } } }
+  /assessments/{id}/grades:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: listGrades
+      tags: [ Gradebook ]
+      summary: Scores for one assessment
+      description: 'Roles: teacher (taught), admin (view).'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Grades
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Grade' } } }, required: [ items ] } } }
+    patch:
+      operationId: upsertGrades
+      tags: [ Gradebook ]
+      summary: 'Batch upsert, one row per student'
+      description: 'Roles: teacher (taught, term open). Per-entry outcomes like the attendance PUT; a score above `max_score` is rejected for that entry.'
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ grades ]
+              properties:
+                grades:
+                  type: array
+                  items:
+                    type: object
+                    required: [ student_id ]
+                    properties:
+                      student_id: { type: string, format: uuid }
+                      score: { type: number, nullable: true, description: 'null clears the score' }
+                      comment: { type: string, nullable: true }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Per-entry outcomes', content: { application/json: { schema: { $ref: '#/components/schemas/BatchResult' } } } }
+  /class_sections/{id}/comments:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: listReportComments
+      tags: [ Gradebook ]
+      summary: One subject's drafted report comments, one per pupil
+      description: 'Roles: teacher (taught), admin (view).'
+      parameters: [ { name: subject, in: query, required: true, schema: { type: string } } ]
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Sheet', content: { application/json: { schema: { $ref: '#/components/schemas/ReportCommentSheet' } } } }
+    patch:
+      operationId: upsertReportComments
+      tags: [ Gradebook ]
+      summary: 'Batch save drafted comments, one row per pupil'
+      description: 'Roles: teacher (taught, term open). Not visible to guardians until the term closes.'
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ subject, comments ]
+              properties:
+                subject: { type: string }
+                comments:
+                  type: array
+                  items:
+                    type: object
+                    required: [ student_id, body ]
+                    properties: { student_id: { type: string, format: uuid }, body: { type: string, maxLength: 2000 } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Per-entry outcomes', content: { application/json: { schema: { $ref: '#/components/schemas/BatchResult' } } } }
+  /students/{id}/report_comments:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getReportComments
+      tags: [ Gradebook ]
+      summary: A student's issued report comments
+      description: 'Roles: admin (any time), guardian (own child, only once the term closes). Not every subject may have one yet.'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: List
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/ReportComment' } } }, required: [ items ] } } }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  # ------------------------------------------------------------------ fees
+  /fee_items:
+    get:
+      operationId: listFeeItems
+      tags: [ Fees ]
+      summary: A school's reusable named charges
+      description: 'Roles: admin. A convenience and reporting tag for invoices: creating one does not touch any existing invoice.'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'List', content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/FeeItem' } } }, required: [ items ] } } } }
+    post:
+      operationId: createFeeItem
+      tags: [ Fees ]
+      summary: Define a reusable fee
+      description: 'Roles: admin.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ name, default_amount ]
+              properties:
+                name: { type: string, example: 'Term 1 Tuition' }
+                default_amount: { $ref: '#/components/schemas/Money' }
+                active: { type: boolean, default: true }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { description: 'Created', content: { application/json: { schema: { $ref: '#/components/schemas/FeeItem' } } } }
+  /fee_items/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      operationId: updateFeeItem
+      tags: [ Fees ]
+      summary: Edit or retire a fee item
+      description: 'Roles: admin. Retire with `active: false` rather than deleting: past invoices keep their `fee_item_id` reference.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                default_amount: { $ref: '#/components/schemas/Money' }
+                active: { type: boolean }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Updated', content: { application/json: { schema: { $ref: '#/components/schemas/FeeItem' } } } }
+        '404': { $ref: '#/components/responses/Problem' }
+  /invoices:
+    get:
+      operationId: listInvoices
+      tags: [ Fees ]
+      summary: Invoices across the school
+      description: 'Roles: admin.'
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [ unpaid, partial, paid, void, overdue ] } }
+        - { name: term_id, in: query, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Page', content: { application/json: { schema: { $ref: '#/components/schemas/InvoicePage' } } } }
+    post:
+      operationId: createInvoices
+      tags: [ Fees ]
+      summary: 'Create an invoice, or generate them for a section from a fee structure'
+      description: 'Roles: admin.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ term_id, description, amount_due, due_date ]
+              properties:
+                student_id: { type: string, format: uuid }
+                class_section_id: { type: string, format: uuid, description: 'Bulk: one invoice per enrolled student' }
+                term_id: { type: string, format: uuid }
+                description: { type: string }
+                amount_due: { $ref: '#/components/schemas/Money' }
+                due_date: { type: string, format: date }
+                fee_item_id: { type: string, format: uuid, description: 'Tags the invoice for reporting; description and amount_due are still explicit and unaffected' }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201':
+          description: Created
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Invoice' } } }, required: [ items ] } } }
+  /invoices/{id}/pay:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      operationId: startPayment
+      tags: [ Fees ]
+      summary: Start a payment
+      description: |
+        Roles: guardian (own child). Creates a `pending` payment and returns how to complete it.
+        **The invoice never changes state here**: only the gateway webhook settles it. Card returns a
+        hosted-checkout `redirect_url`; mobile money returns `prompt` (approve on your phone) and the
+        client polls `GET /payments/{id}`. Amount may be partial, up to the outstanding balance.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ amount, method ]
+              properties:
+                amount: { $ref: '#/components/schemas/Money' }
+                method: { type: string, enum: [ card, mtn_momo, telecel_cash ] }
+                phone: { type: string, description: 'Required for mobile money' }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '202': { description: 'Payment started', content: { application/json: { schema: { $ref: '#/components/schemas/PaymentStart' } } } }
+        '409': { $ref: '#/components/responses/Problem' }
+  /payments:
+    get:
+      operationId: listPayments
+      tags: [ Fees ]
+      summary: Payments ledger for reconciliation
+      description: 'Roles: admin. `stale_pending=true` lists payments still pending after 30 minutes: the ones to chase with the gateway.'
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/PaymentStatus' } }
+        - { name: stale_pending, in: query, schema: { type: boolean } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Page
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Payment' } }, next_cursor: { type: string, nullable: true } }, required: [ items, next_cursor ] } } }
+    post:
+      operationId: recordManualPayment
+      tags: [ Fees ]
+      summary: 'Record a manual payment (cash, bank)'
+      description: 'Roles: admin. Goes through the same settlement function as the webhook.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ invoice_id, amount, reference ]
+              properties:
+                invoice_id: { type: string, format: uuid }
+                amount: { $ref: '#/components/schemas/Money' }
+                reference: { type: string, description: 'Idempotency reference, e.g. receipt number' }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { description: 'Recorded', content: { application/json: { schema: { $ref: '#/components/schemas/Payment' } } } }
+  /payments/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getPayment
+      tags: [ Fees ]
+      summary: Payment status (clients poll this after /pay)
+      description: 'Roles: admin, guardian (own child).'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Payment', content: { application/json: { schema: { $ref: '#/components/schemas/Payment' } } } }
+  /webhooks/payment:
+    post:
+      operationId: paymentWebhook
+      tags: [ Fees ]
+      summary: Gateway callback
+      description: |
+        Not user-authenticated: verified by the provider's signature header. Calls
+        `apply_payment_webhook`, which is idempotent on the provider reference and never downgrades a
+        settled payment, so the gateway may retry freely. Always answer 200 to a verified event.
+      security: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Processed' }
+        '401': { $ref: '#/components/responses/Problem' }
+
+  # ------------------------------------------------------------------ messaging
+  /threads:
+    get:
+      operationId: listThreads
+      tags: [ Messaging ]
+      summary: 'My message threads (admin: all, read-only audit)'
+      description: 'Roles: teacher, guardian (participant), admin (audit).'
+      parameters: [ { name: student_id, in: query, schema: { type: string, format: uuid } } ]
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Threads with last message and unread count
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Thread' } } }, required: [ items ] } } }
+    post:
+      operationId: openThread
+      tags: [ Messaging ]
+      summary: Open a thread about a child
+      description: |
+        Roles: teacher, guardian. A thread is always about one student both parties share, never a free DM.
+        Returns the existing thread if one already exists for (student, teacher, guardian).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ student_id, other_party_id ]
+              properties:
+                student_id: { type: string, format: uuid }
+                other_party_id: { type: string, format: uuid, description: 'The teacher (if caller is a guardian) or guardian (if caller is a teacher)' }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Existing thread', content: { application/json: { schema: { $ref: '#/components/schemas/Thread' } } } }
+        '201': { description: 'Created', content: { application/json: { schema: { $ref: '#/components/schemas/Thread' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+  /threads/{id}/messages:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: listMessages
+      tags: [ Messaging ]
+      summary: 'Messages in a thread, oldest first'
+      parameters: [ { $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Cursor' } ]
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Page
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Message' } }, next_cursor: { type: string, nullable: true } }, required: [ items, next_cursor ] } } }
+    post:
+      operationId: sendMessage
+      tags: [ Messaging ]
+      summary: Send a message
+      description: 'Roles: teacher, guardian (participant). Messages are immutable once sent. Admin cannot post.'
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [ body ], properties: { body: { type: string, minLength: 1, maxLength: 5000 } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { description: 'Sent', content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } } }
+
+  # ------------------------------------------------------------------ announcements
+  /announcements:
+    get:
+      operationId: listAnnouncements
+      tags: [ Announcements ]
+      summary: Announcements visible to me
+      description: 'Roles: any. Guardians see published, school-wide or their children''s sections; admin also sees drafts.'
+      parameters: [ { $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Cursor' } ]
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Page', content: { application/json: { schema: { $ref: '#/components/schemas/AnnouncementPage' } } } }
+    post:
+      operationId: createAnnouncement
+      tags: [ Announcements ]
+      summary: Create an announcement or permission slip
+      description: 'Roles: admin (school-wide or any class), teacher (own class only). Omit `published` to save a draft.'
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AnnouncementInput' } } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { description: 'Created', content: { application/json: { schema: { $ref: '#/components/schemas/Announcement' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+  /announcements/{id}/publish:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      operationId: publishAnnouncement
+      tags: [ Announcements ]
+      summary: Publish a draft and fan out notifications
+      description: 'Roles: admin, teacher (author).'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Published', content: { application/json: { schema: { $ref: '#/components/schemas/Announcement' } } } }
+  /announcements/{id}/responses:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: getAnnouncementResponses
+      tags: [ Announcements ]
+      summary: Permission-slip tally
+      description: 'Roles: admin.'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Responses and counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  yes: { type: integer }
+                  no: { type: integer }
+                  awaiting: { type: integer }
+                  items: { type: array, items: { $ref: '#/components/schemas/AnnouncementResponse' } }
+                required: [ items ]
+    put:
+      operationId: respondToAnnouncement
+      tags: [ Announcements ]
+      summary: Reply yes or no for one child
+      description: 'Roles: guardian (own child). Only for announcements with `requires_response`. Replaces any earlier reply.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ student_id, response ]
+              properties: { student_id: { type: string, format: uuid }, response: { type: string, enum: [ 'yes', 'no' ] } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Saved', content: { application/json: { schema: { $ref: '#/components/schemas/AnnouncementResponse' } } } }
+
+  # ------------------------------------------------------------------ homework
+  /class_sections/{id}/homework:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      operationId: listHomework
+      tags: [ Homework ]
+      summary: Homework for a section
+      description: 'Roles: teacher (taught), admin (view).'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Homework
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Homework' } } }, required: [ items ] } } }
+    post:
+      operationId: postHomework
+      tags: [ Homework ]
+      summary: Post homework
+      description: 'Roles: teacher (taught, term open). Notifies guardians of enrolled students.'
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/HomeworkInput' } } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { description: 'Posted', content: { application/json: { schema: { $ref: '#/components/schemas/Homework' } } } }
+
+  # ------------------------------------------------------------------ conferences
+  /conference_slots:
+    get:
+      operationId: listConferenceSlots
+      tags: [ Conferences ]
+      summary: Slots I can see
+      description: 'Roles: guardian (open slots of their children''s teachers, plus their own bookings), teacher (own), admin (all).'
+      parameters:
+        - { name: teacher_id, in: query, schema: { type: string, format: uuid } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Slots
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/ConferenceSlot' } } }, required: [ items ] } } }
+    post:
+      operationId: createConferenceSlots
+      tags: [ Conferences ]
+      summary: Create slots (a window split into equal slots)
+      description: 'Roles: teacher (own), admin.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ teacher_id, starts_at, ends_at, slot_minutes ]
+              properties:
+                teacher_id: { type: string, format: uuid }
+                starts_at: { type: string, format: date-time }
+                ends_at: { type: string, format: date-time }
+                slot_minutes: { type: integer, minimum: 5, example: 15 }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201':
+          description: Created
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/ConferenceSlot' } } }, required: [ items ] } } }
+  /conference_slots/{id}/booking:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    put:
+      operationId: bookConferenceSlot
+      tags: [ Conferences ]
+      summary: Book this slot for a child
+      description: 'Roles: guardian. The teacher must teach the child. 409 if already booked.'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [ student_id ], properties: { student_id: { type: string, format: uuid } } } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Booked', content: { application/json: { schema: { $ref: '#/components/schemas/ConferenceSlot' } } } }
+        '409': { $ref: '#/components/responses/Problem' }
+    delete:
+      operationId: releaseConferenceSlot
+      tags: [ Conferences ]
+      summary: Release my booking
+      description: 'Roles: guardian (who booked).'
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '204': { description: 'Released' }
+
+  # ------------------------------------------------------------------ admin
+  /people:
+    get:
+      operationId: listPeople
+      tags: [ Admin ]
+      summary: Staff and guardians directory
+      description: 'Roles: admin. (Students are under /students.)'
+      parameters:
+        - { name: role, in: query, schema: { type: string, enum: [ admin, teacher, guardian ] } }
+        - { name: q, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200': { description: 'Page', content: { application/json: { schema: { $ref: '#/components/schemas/PersonPage' } } } }
+    post:
+      operationId: createPerson
+      tags: [ Admin ]
+      summary: 'Create a person (student, guardian, teacher, admin) and optionally invite them'
+      description: 'Roles: admin.'
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PersonInput' } } } }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '201': { description: 'Created', content: { application/json: { schema: { $ref: '#/components/schemas/Person' } } } }
+  /students/{id}/guardians:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    put:
+      operationId: linkGuardian
+      tags: [ Admin ]
+      summary: Link a guardian to a student
+      description: 'Roles: admin. The link is many-to-many and is the join every guardian permission hangs off.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ guardian_id ]
+              properties:
+                guardian_id: { type: string, format: uuid }
+                relationship: { type: string, example: mother }
+                is_primary_contact: { type: boolean }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '204': { description: 'Linked' }
+  /audit_log:
+    get:
+      operationId: listAuditLog
+      tags: [ Admin ]
+      summary: Who read or changed which student record
+      description: 'Roles: admin.'
+      parameters:
+        - { name: student_id, in: query, schema: { type: string, format: uuid } }
+        - { name: actor_id, in: query, schema: { type: string, format: uuid } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Page
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }, next_cursor: { type: string, nullable: true } }, required: [ items, next_cursor ] } } }
+
+  /auth/sessions/select:
+    post:
+      operationId: selectSessionPerson
+      tags: [ Auth ]
+      summary: Finish sign-in by choosing which role to continue as
+      description: 'Used when sign-in returned selection_required because the account holds several people (for example an admin who is also a parent).'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ selection_token, person_id ]
+              properties:
+                selection_token: { type: string }
+                person_id: { type: string, format: uuid }
+      responses:
+        '200': { $ref: '#/components/responses/Session' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+  /dev/sandbox/complete:
+    post:
+      operationId: completeSandboxPayment
+      tags: [ Fees ]
+      summary: 'Development only: finish a sandbox payment as the gateway would'
+      description: 'Exists only while PAYMENT_GATEWAY=sandbox outside production (the server refuses that combination in production). Signs a webhook for the given reference and delivers it through the real webhook path, so the whole flow is exercised with no payment provider.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ reference, outcome ]
+              properties:
+                reference: { type: string }
+                outcome: { type: string, enum: [ succeeded, failed ] }
+      responses:
+        '204': { description: 'Delivered' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+  /auth/refresh:
+    post:
+      operationId: refreshSession
+      tags: [ Auth ]
+      summary: Exchange a refresh token for a new access and refresh token
+      description: 'Refresh tokens rotate: each is single-use. Presenting one that was already used revokes the whole session family (token theft response).'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ refresh_token ]
+              properties: { refresh_token: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/Session' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+  /auth/password/forgot:
+    post:
+      operationId: requestPasswordReset
+      tags: [ Auth ]
+      summary: Email a password-reset link
+      description: 'Always 204, whether or not the address has an account, so it cannot be used to discover accounts.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ email ]
+              properties: { email: { type: string, format: email } }
+      responses:
+        '204': { description: 'Accepted' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+  /auth/password/reset:
+    post:
+      operationId: resetPassword
+      tags: [ Auth ]
+      summary: Choose a new password from a reset or invitation link
+      description: 'The token is single-use. Success signs the account out of every device.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ token, new_password ]
+              properties:
+                token: { type: string }
+                new_password: { type: string, minLength: 8, maxLength: 200 }
+      responses:
+        '204': { description: 'Password changed' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags: [ Me ]
+      summary: My in-app notifications, newest first
+      description: 'Roles: any. Attendance alerts, fee receipts, homework, announcements, messages.'
+      parameters:
+        - { name: unread, in: query, schema: { type: boolean } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '200': { description: 'Page', content: { application/json: { schema: { $ref: '#/components/schemas/NotificationPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+  /notifications/read:
+    post:
+      operationId: markNotificationsRead
+      tags: [ Me ]
+      summary: Mark notifications read (given ids, or all when ids is omitted)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: string, format: uuid } }
+      responses:
+        '204': { description: 'Marked' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+  /me/contact:
+    put:
+      operationId: updateMyContact
+      tags: [ Me ]
+      summary: Update my own phone and email
+      description: 'Roles: any. Only the caller''s own contact row; nobody else can read it except admin.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                phone: { type: string, nullable: true }
+                email: { type: string, format: email, nullable: true }
+      responses:
+        '200': { description: 'Saved', content: { application/json: { schema: { $ref: '#/components/schemas/Contact' } } } }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+  /threads/{id}/read:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      operationId: markThreadRead
+      tags: [ Messaging ]
+      summary: Mark a thread read up to now (clears its unread badge)
+      description: 'Roles: teacher, guardian (participant).'
+      responses:
+        '204': { description: 'Marked' }
+        '4XX': { $ref: '#/components/responses/Problem' }
+        '5XX': { $ref: '#/components/responses/Problem' }
+
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
+
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    Cursor: { name: cursor, in: query, schema: { type: string } }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 100 }
+      description: Client-generated; replays within 24 h return the original response.
+
+  responses:
+    Session:
+      description: Signed in
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Session' }
+    SignInResult:
+      description: Signed in, or a role choice is needed first
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SignInResult"
+    School:
+      description: Created
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/School' }
+    Problem:
+      description: Error
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    Session:
+      type: object
+      required: [ access_token, refresh_token, expires_in, me ]
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_in: { type: integer, description: 'Access token lifetime in seconds' }
+        me: { $ref: '#/components/schemas/Me' }
+    SelectionRequired:
+      type: object
+      required: [ selection_token, choices ]
+      properties:
+        selection_token: { type: string, description: 'Short-lived; exchange via /auth/sessions/select' }
+        choices:
+          type: array
+          items:
+            type: object
+            required: [ person_id, role, school_name ]
+            properties:
+              person_id: { type: string, format: uuid }
+              role: { $ref: '#/components/schemas/Role' }
+              school_name: { type: string }
+              full_name: { type: string }
+    Contact:
+      type: object
+      properties:
+        phone: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+      required: [ phone, email ]
+    School:
+      type: object
+      required: [ id, name, timezone ]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        timezone: { type: string }
+    Notification:
+      type: object
+      required: [ id, kind, title, body, created_at ]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, example: attendance.marked }
+        title: { type: string }
+        body: { type: string }
+        data: { type: object, additionalProperties: true }
+        read_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    NotificationPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+        next_cursor: { type: string, nullable: true }
+        unread_count: { type: integer }
+      required: [ items, next_cursor, unread_count ]
+    Problem:
+      type: object
+      required: [ status, title ]
+      properties:
+        status: { type: integer }
+        title: { type: string }
+        detail: { type: string }
+        code: { type: string, example: term_closed }
+        errors:
+          type: array
+          items: { type: object, properties: { field: { type: string }, message: { type: string } } }
+        request_id:
+          type: string
+          description: Matches the X-Request-Id response header and the server logs
+    Money:
+      type: string
+      pattern: '^[0-9]+[.][0-9]{2}$'
+      example: '1850.00'
+    AttendanceStatus: { type: string, enum: [ present, late, absent, excused ] }
+    PaymentStatus: { type: string, enum: [ pending, succeeded, failed ] }
+    Role: { type: string, enum: [ admin, teacher, guardian, student ] }
+
+    Me:
+      type: object
+      required: [ id, full_name, role, school, now ]
+      properties:
+        id: { type: string, format: uuid }
+        full_name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        school:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            timezone: { type: string }
+            term: { $ref: '#/components/schemas/Term' }
+          required: [ id, name, timezone ]
+        contact: { $ref: '#/components/schemas/Contact' }
+        children: { type: array, items: { $ref: '#/components/schemas/StudentRef' }, description: 'Guardians only' }
+        sections: { type: array, items: { $ref: '#/components/schemas/ClassSection' }, description: 'Teachers only' }
+        now:
+          type: string
+          format: date-time
+          description: The server's current time. Clients use it to correct a wrong device clock and to agree with the server about what 'today' is.
+    NotificationPrefs:
+      type: object
+      required: [ push, email, sms ]
+      properties: { push: { type: boolean }, email: { type: boolean }, sms: { type: boolean } }
+
+    StudentRef:
+      type: object
+      required: [ id, full_name ]
+      properties:
+        id: { type: string, format: uuid }
+        full_name: { type: string }
+        class_section: { type: object, properties: { id: { type: string, format: uuid }, name: { type: string } }, required: [ id, name ] }
+    Student:
+      allOf:
+        - $ref: '#/components/schemas/StudentRef'
+        - type: object
+          properties:
+            grade_level: { type: string }
+            attendance_rate_pct: { type: number, nullable: true }
+            guardian_names: { type: array, items: { type: string }, description: 'Admin lists only: primary contact first' }
+          required: [ attendance_rate_pct ]
+    StudentPage:
+      type: object
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/Student' } }, next_cursor: { type: string, nullable: true } }
+      required: [ items, next_cursor ]
+    StudentDetail:
+      allOf:
+        - $ref: '#/components/schemas/Student'
+        - type: object
+          properties:
+            guardians: { type: array, items: { $ref: '#/components/schemas/GuardianLink' }, description: 'Admin (with contact details) and teachers of the student (names only)' }
+            enrollments: { type: array, items: { $ref: '#/components/schemas/Enrollment' }, description: 'Admin only' }
+    GuardianLink:
+      type: object
+      properties:
+        guardian: { $ref: '#/components/schemas/Person' }
+        relationship: { type: string }
+        is_primary_contact: { type: boolean }
+      required: [ guardian, relationship, is_primary_contact ]
+    StudentSummary:
+      type: object
+      required: [ student_id, attendance, grades, balance, pending_payments ]
+      properties:
+        student_id: { type: string, format: uuid }
+        attendance:
+          type: object
+          properties:
+            total: { type: integer }
+            present: { type: integer }
+            late: { type: integer }
+            absent: { type: integer }
+            excused: { type: integer }
+            rate_pct: { type: number, nullable: true, description: '(present + late) / total; excused counts as absent for the rate' }
+          required: [ total, present, late, absent, excused, rate_pct ]
+        grades:
+          type: array
+          items:
+            type: object
+            properties:
+              class_section_id: { type: string, format: uuid }
+              subject: { type: string }
+              running_grade: { type: number, description: 'Weighted over assessments that have a score' }
+              grade_band: { type: string, nullable: true, description: 'Label from the school''s grading scale, or null if none configured' }
+            required: [ class_section_id, subject, running_grade, grade_band ]
+        balance: { type: string, nullable: true, pattern: '^[0-9]+[.][0-9]{2}$', example: '600.00', description: 'Null for teachers' }
+        pending_payments: { type: string, nullable: true, pattern: '^[0-9]+[.][0-9]{2}$', example: '500.00' }
+
+    Person:
+      type: object
+      required: [ id, full_name, role ]
+      properties:
+        id: { type: string, format: uuid }
+        full_name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        contact: { type: object, properties: { phone: { type: string }, email: { type: string } } }
+        assignments:
+          type: array
+          description: 'Teachers, in the admin directory: what they teach, in the current term'
+          items:
+            type: object
+            properties:
+              class_section: { type: object, properties: { id: { type: string, format: uuid }, name: { type: string } }, required: [ id, name ] }
+              subject: { type: string }
+            required: [ class_section, subject ]
+    PersonInput:
+      type: object
+      required: [ full_name, role ]
+      properties:
+        full_name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        email: { type: string, format: email }
+        phone: { type: string }
+        invite: { type: boolean, default: false }
+    PersonPage:
+      type: object
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/Person' } }, next_cursor: { type: string, nullable: true } }
+      required: [ items, next_cursor ]
+
+    AdminOverview:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        attendance_rate_today_pct: { type: number, nullable: true }
+        registers_unmarked:
+          type: array
+          items:
+            type: object
+            properties:
+              class_section: { $ref: '#/components/schemas/ClassSection' }
+              period: { $ref: '#/components/schemas/Period' }
+              teacher: { $ref: '#/components/schemas/Person' }
+            required: [ class_section, period, teacher ]
+        fees_outstanding: { $ref: '#/components/schemas/Money' }
+        invoices_overdue: { type: integer }
+        recent_announcements: { type: array, items: { $ref: '#/components/schemas/Announcement' } }
+      required: [ date, attendance_rate_today_pct, registers_unmarked, fees_outstanding, invoices_overdue, recent_announcements ]
+    Term:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        starts_on: { type: string, format: date }
+        ends_on: { type: string, format: date }
+        closed: { type: boolean }
+      required: [ id, name, starts_on, ends_on, closed ]
+    TermInput:
+      type: object
+      properties:
+        name: { type: string }
+        starts_on: { type: string, format: date }
+        ends_on: { type: string, format: date }
+        closed: { type: boolean }
+    ClassSection:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: 6A }
+        grade_level: { type: string }
+        term_id: { type: string, format: uuid }
+        homeroom_teacher: { $ref: '#/components/schemas/Person' }
+        subject: { type: string, description: 'Present on /me and /class_sections for a teacher: the subject they teach here' }
+      required: [ id, name, grade_level, term_id ]
+    ClassSectionInput:
+      type: object
+      properties:
+        name: { type: string }
+        grade_level: { type: string }
+        term_id: { type: string, format: uuid }
+        homeroom_teacher_id: { type: string, format: uuid, nullable: true }
+    ClassSectionDetail:
+      allOf:
+        - $ref: '#/components/schemas/ClassSection'
+        - type: object
+          properties:
+            teachers:
+              type: array
+              items: { type: object, properties: { person: { $ref: '#/components/schemas/Person' }, subject: { type: string } }, required: [ person, subject ] }
+            roster: { type: array, items: { $ref: '#/components/schemas/Student' } }
+            attendance_rate_pct: { type: number, nullable: true }
+          required: [ teachers, roster, attendance_rate_pct ]
+    Enrollment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        student_id: { type: string, format: uuid }
+        class_section_id: { type: string, format: uuid }
+        class_section_name: { type: string }
+        term_name: { type: string }
+        status: { type: string, enum: [ active, completed, withdrawn ] }
+      required: [ id, student_id, class_section_id, status ]
+    Period:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        subject: { type: string }
+        teacher: { $ref: '#/components/schemas/Person' }
+        weekday: { type: integer, minimum: 1, maximum: 7, description: 'ISO, 1 = Monday' }
+        starts_at: { type: string, example: '08:00' }
+        ends_at: { type: string, example: '08:45' }
+      required: [ id, subject, teacher, weekday, starts_at, ends_at ]
+    PeriodInput:
+      type: object
+      required: [ subject, teacher_id, weekday, starts_at, ends_at ]
+      properties:
+        subject: { type: string }
+        teacher_id: { type: string, format: uuid }
+        weekday: { type: integer }
+        starts_at: { type: string }
+        ends_at: { type: string }
+    TodayPeriod:
+      type: object
+      properties:
+        period: { $ref: '#/components/schemas/Period' }
+        class_section: { $ref: '#/components/schemas/ClassSection' }
+        register: { type: string, enum: [ unmarked, partial, complete ] }
+        marked: { type: integer }
+        enrolled: { type: integer }
+      required: [ period, class_section, register, marked, enrolled ]
+
+    AttendanceRecord:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        student_id: { type: string, format: uuid }
+        class_section_id: { type: string, format: uuid }
+        period_id: { type: string, format: uuid, nullable: true }
+        period_date: { type: string, format: date }
+        status: { $ref: '#/components/schemas/AttendanceStatus' }
+        note: { type: string, nullable: true }
+        marked_by: { type: string, format: uuid }
+        marked_at: { type: string, format: date-time }
+      required: [ id, student_id, class_section_id, period_id, period_date, status, note, marked_by, marked_at ]
+    Register:
+      type: object
+      properties:
+        class_section_id: { type: string, format: uuid }
+        period_id: { type: string, format: uuid, nullable: true }
+        date: { type: string, format: date }
+        term_closed: { type: boolean, description: 'True means read-only for teachers' }
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              student: { $ref: '#/components/schemas/StudentRef' }
+              status: { type: string, nullable: true, enum: [ present, late, absent, excused, null ] }
+              note: { type: string, nullable: true }
+              record_id: { type: string, format: uuid, nullable: true }
+            required: [ student, status, note, record_id ]
+      required: [ class_section_id, period_id, date, term_closed, entries ]
+    RegisterSubmission:
+      type: object
+      required: [ date, entries ]
+      properties:
+        date: { type: string, format: date }
+        period_id: { type: string, format: uuid, nullable: true }
+        entries:
+          type: array
+          items:
+            type: object
+            required: [ student_id, status, marked_at ]
+            properties:
+              student_id: { type: string, format: uuid }
+              status: { $ref: '#/components/schemas/AttendanceStatus' }
+              note: { type: string }
+              marked_at: { type: string, format: date-time, description: 'Device time of the tap; decides last-write-wins' }
+    BatchResult:
+      type: object
+      properties:
+        applied: { type: integer }
+        rejected: { type: integer }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              student_id: { type: string, format: uuid }
+              outcome: { type: string, enum: [ applied, stale, rejected ] }
+              code: { type: string, nullable: true, example: not_enrolled }
+              message: { type: string, nullable: true }
+            required: [ student_id, outcome ]
+      required: [ applied, rejected, results ]
+    RegisterResult:
+      $ref: '#/components/schemas/BatchResult'
+    AttendanceReport:
+      type: object
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              student: { $ref: '#/components/schemas/StudentRef' }
+              present: { type: integer }
+              late: { type: integer }
+              absent: { type: integer }
+              excused: { type: integer }
+              rate_pct: { type: number, nullable: true }
+            required: [ student, present, late, absent, excused, rate_pct ]
+      required: [ from, to, rows ]
+
+    Assessment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        subject: { type: string }
+        title: { type: string }
+        weight: { type: number, description: 'Percent of the final grade' }
+        max_score: { type: number }
+        due_date: { type: string, format: date, nullable: true }
+      required: [ id, subject, title, weight, max_score, due_date ]
+    AssessmentInput:
+      type: object
+      properties:
+        subject: { type: string }
+        title: { type: string }
+        weight: { type: number, minimum: 0.01, maximum: 100 }
+        max_score: { type: number, minimum: 0.01 }
+        due_date: { type: string, format: date }
+    Grade:
+      type: object
+      properties:
+        student_id: { type: string, format: uuid }
+        assessment_id: { type: string, format: uuid }
+        score: { type: number, nullable: true }
+        comment: { type: string, nullable: true }
+      required: [ student_id, assessment_id, score, comment ]
+    Gradebook:
+      type: object
+      properties:
+        class_section_id: { type: string, format: uuid }
+        term_closed: { type: boolean }
+        assessments: { type: array, items: { $ref: '#/components/schemas/Assessment' } }
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              student: { $ref: '#/components/schemas/StudentRef' }
+              scores:
+                type: object
+                additionalProperties: { type: number, nullable: true }
+                description: Keyed by assessment id
+              running_grade: { type: number, nullable: true }
+              grade_band: { type: string, nullable: true, description: 'Label from the school''s grading scale, or null if none configured' }
+            required: [ student, scores, running_grade, grade_band ]
+      required: [ class_section_id, term_closed, assessments, rows ]
+    SubjectGrades:
+      type: object
+      properties:
+        class_section_id: { type: string, format: uuid }
+        subject: { type: string }
+        running_grade: { type: number, nullable: true }
+        grade_band: { type: string, nullable: true, description: 'Label from the school''s grading scale, or null if none configured' }
+        assessments:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/Assessment'
+              - type: object
+                properties: { score: { type: number, nullable: true }, comment: { type: string, nullable: true } }
+                required: [ score, comment ]
+      required: [ class_section_id, subject, running_grade, grade_band, assessments ]
+    ReportCommentSheet:
+      type: object
+      required: [ class_section_id, subject, term_closed, items ]
+      properties:
+        class_section_id: { type: string, format: uuid }
+        subject: { type: string }
+        term_closed: { type: boolean }
+        items:
+          type: array
+          items:
+            type: object
+            required: [ student, body, updated_at ]
+            properties:
+              student: { $ref: '#/components/schemas/StudentRef' }
+              body: { type: string, nullable: true, description: 'null if nothing has been drafted yet' }
+              updated_at: { type: string, format: date-time, nullable: true }
+    ReportComment:
+      type: object
+      required: [ class_section_id, subject, body, updated_at, teacher ]
+      properties:
+        class_section_id: { type: string, format: uuid }
+        subject: { type: string }
+        body: { type: string }
+        updated_at: { type: string, format: date-time }
+        teacher: { $ref: '#/components/schemas/Person' }
+
+    Invoice:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        student: { $ref: '#/components/schemas/StudentRef' }
+        term_id: { type: string, format: uuid }
+        description: { type: string }
+        amount_due: { $ref: '#/components/schemas/Money' }
+        amount_paid: { $ref: '#/components/schemas/Money' }
+        outstanding: { $ref: '#/components/schemas/Money' }
+        status: { type: string, enum: [ unpaid, partial, paid, void ] }
+        due_date: { type: string, format: date }
+        overdue: { type: boolean, description: 'Derived, due_date passed and outstanding > 0' }
+        fee_item_id: { type: string, format: uuid, nullable: true, description: 'The reusable fee item this was billed from, if any' }
+        payments: { type: array, items: { $ref: '#/components/schemas/Payment' } }
+      required: [ id, student, term_id, description, amount_due, amount_paid, outstanding, status, due_date, overdue, fee_item_id, payments ]
+    GradeBand:
+      type: object
+      required: [ id, label, min_score, max_score ]
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string, example: A }
+        min_score: { type: number }
+        max_score: { type: number }
+    FeeItem:
+      type: object
+      required: [ id, name, default_amount, active ]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: 'Term 1 Tuition' }
+        default_amount: { $ref: '#/components/schemas/Money' }
+        active: { type: boolean }
+    InvoicePage:
+      type: object
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/Invoice' } }, next_cursor: { type: string, nullable: true } }
+      required: [ items, next_cursor ]
+    Payment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        invoice_id: { type: string, format: uuid }
+        amount: { $ref: '#/components/schemas/Money' }
+        method: { type: string, enum: [ card, mtn_momo, telecel_cash, manual ] }
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        provider_ref: { type: string }
+        paid_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        receipt_url: { type: string, nullable: true }
+        student: { $ref: '#/components/schemas/StudentRef' }
+        description: { type: string, description: 'What the invoice is for' }
+      required: [ id, invoice_id, amount, method, status, provider_ref, paid_at, created_at, receipt_url ]
+    PaymentStart:
+      type: object
+      properties:
+        payment: { $ref: '#/components/schemas/Payment' }
+        next:
+          type: object
+          properties:
+            type: { type: string, enum: [ redirect, prompt ] }
+            redirect_url: { type: string, description: 'Card: hosted checkout' }
+            message: { type: string, description: 'Mobile money: e.g. "Approve the request on 024 000 0001"' }
+          required: [ type ]
+      required: [ payment, next ]
+
+    Thread:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        student: { $ref: '#/components/schemas/StudentRef' }
+        teacher: { $ref: '#/components/schemas/Person' }
+        guardian: { $ref: '#/components/schemas/Person' }
+        last_message: { $ref: '#/components/schemas/Message' }
+        unread: { type: integer }
+      required: [ id, student, teacher, guardian, unread ]
+    Message:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        thread_id: { type: string, format: uuid }
+        sender_id: { type: string, format: uuid }
+        body: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [ id, thread_id, sender_id, body, created_at ]
+
+    Announcement:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        author: { $ref: '#/components/schemas/Person' }
+        class_section_id: { type: string, format: uuid, nullable: true, description: 'Null = school-wide' }
+        title: { type: string }
+        body: { type: string }
+        requires_response: { type: boolean }
+        published_at: { type: string, format: date-time, nullable: true, description: 'Null = draft' }
+        my_responses:
+          type: array
+          items: { $ref: '#/components/schemas/AnnouncementResponse' }
+          description: 'Guardians, for slips that require a reply'
+      required: [ id, class_section_id, title, body, requires_response, published_at ]
+    AnnouncementInput:
+      type: object
+      required: [ title, body ]
+      properties:
+        title: { type: string }
+        body: { type: string }
+        class_section_id: { type: string, format: uuid, nullable: true }
+        requires_response: { type: boolean, default: false }
+        published: { type: boolean, default: false }
+    AnnouncementPage:
+      type: object
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/Announcement' } }, next_cursor: { type: string, nullable: true } }
+      required: [ items, next_cursor ]
+    AnnouncementResponse:
+      type: object
+      properties:
+        announcement_id: { type: string, format: uuid }
+        student_id: { type: string, format: uuid }
+        guardian_id: { type: string, format: uuid }
+        response: { type: string, enum: [ 'yes', 'no' ] }
+        responded_at: { type: string, format: date-time }
+      required: [ announcement_id, student_id, guardian_id, response, responded_at ]
+
+    Homework:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        class_section_id: { type: string, format: uuid }
+        subject: { type: string, nullable: true }
+        title: { type: string }
+        body: { type: string, nullable: true }
+        due_date: { type: string, format: date }
+        posted_by: { $ref: '#/components/schemas/Person' }
+      required: [ id, class_section_id, subject, title, body, due_date ]
+    HomeworkInput:
+      type: object
+      required: [ title, due_date ]
+      properties:
+        title: { type: string }
+        body: { type: string }
+        due_date: { type: string, format: date }
+
+    ConferenceSlot:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        teacher: { $ref: '#/components/schemas/Person' }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        booked: { type: boolean }
+        booked_by_me: { type: boolean }
+        student: { $ref: '#/components/schemas/StudentRef' }
+      required: [ id, teacher, starts_at, ends_at, booked, booked_by_me ]
+
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        actor: { $ref: '#/components/schemas/Person' }
+        action: { type: string, example: read }
+        table_name: { type: string }
+        student_id: { type: string, format: uuid, nullable: true }
+        student: { $ref: '#/components/schemas/StudentRef' }
+        at: { type: string, format: date-time }
+      required: [ id, actor, action, table_name, student_id, at ]
+    SignInResult:
+      type: object
+      description: Either a signed-in session, or (for an account holding several roles) the choices to pick from.
+      properties:
+        status:
+          type: string
+          enum:
+            - signed_in
+            - selection_required
+        session:
+          $ref: "#/components/schemas/Session"
+        selection:
+          $ref: "#/components/schemas/SelectionRequired"
+      required: [ status ]
