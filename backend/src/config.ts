@@ -24,6 +24,11 @@ const schema = z.object({
   PAYMENT_GATEWAY: z.enum(['sandbox', 'paystack']).default('sandbox'),
   PAYMENT_WEBHOOK_SECRET: z.string().min(16).optional(),
   PAYSTACK_SECRET_KEY: z.string().optional(),
+  /** Explicit opt-in to run production with fake payments (MVP/evaluation deploys without a Paystack account yet). */
+  ALLOW_SANDBOX_PAYMENTS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   /** Base URL the gateway redirects the parent back to after checkout. */
   PUBLIC_WEB_URL: z.string().url().default('http://localhost:5173'),
 
@@ -90,7 +95,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     ].filter(Boolean);
     if (missing.length) throw new Error(`Missing required production settings: ${missing.join(', ')}`);
     if (c.CORS_ORIGINS === '*') throw new Error('CORS_ORIGINS must list explicit origins in production');
-    if (c.PAYMENT_GATEWAY === 'sandbox') throw new Error('PAYMENT_GATEWAY=sandbox is not allowed in production');
+    if (c.PAYMENT_GATEWAY === 'sandbox' && !c.ALLOW_SANDBOX_PAYMENTS) {
+      throw new Error(
+        'PAYMENT_GATEWAY=sandbox is not allowed in production unless ALLOW_SANDBOX_PAYMENTS=true ' +
+          '(MVP/evaluation only — no real money moves until PAYMENT_GATEWAY=paystack is configured)',
+      );
+    }
   }
   return {
     ...c,

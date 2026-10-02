@@ -1,10 +1,14 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import type { Db } from './types.ts';
 
-export const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
+/**
+ * Relative to the process cwd (always `backend/`, whether running `src/server.ts` directly or a
+ * bundled `api/index.js` on Vercel) rather than `import.meta.url` — a bundler inlines this file,
+ * which would otherwise make the module's own location, and so this path, bundler-dependent.
+ */
+export const MIGRATIONS_DIR = join(process.cwd(), 'migrations');
 
 export interface MigrationFile {
   name: string;

@@ -13,7 +13,8 @@
     "lint:contract": "npx --yes @redocly/cli@latest lint openapi.yaml",
     "gen:types": "openapi-typescript openapi.yaml -o src/api/schema.d.ts",
     "migrate": "node src/cli.ts migrate",
-    "seed": "node src/cli.ts seed"
+    "seed": "node src/cli.ts seed",
+    "vercel-build": "esbuild src/vercel.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=api/index.js"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
@@ -29,6 +30,7 @@
     "@types/pg": "^8.23.1",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
+    "esbuild": "^0.28.2",
     "openapi-typescript": "^7.13.0",
     "typescript": "~5.9.3",
     "yaml": "^2.9.1"

@@ -52,6 +52,12 @@ describe('configuration', () => {
     assert.throws(() => loadConfig({ ...prod, PAYMENT_GATEWAY: 'sandbox' }), /sandbox/);
     assert.throws(() => loadConfig({ ...prod, PAYSTACK_SECRET_KEY: undefined }), /PAYSTACK_SECRET_KEY/);
   });
+  test('ALLOW_SANDBOX_PAYMENTS opts a production deploy into fake payments for MVP/eval use', () => {
+    const { PAYMENT_GATEWAY, PAYSTACK_SECRET_KEY, ...rest } = prod;
+    const c = loadConfig({ ...rest, ALLOW_SANDBOX_PAYMENTS: 'true' });
+    assert.equal(c.PAYMENT_GATEWAY, 'sandbox');
+    assert.throws(() => loadConfig({ ...rest, ALLOW_SANDBOX_PAYMENTS: 'false' }), /sandbox/);
+  });
   test('malformed values fail fast with the setting\'s name', () => {
     assert.throws(() => loadConfig({ PORT: 'eighty' }), /PORT/);
     assert.throws(() => loadConfig({ JWT_SECRET: 'short' }), /JWT_SECRET/);
