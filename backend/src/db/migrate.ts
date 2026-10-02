@@ -1,14 +1,25 @@
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Db } from './types.ts';
 
 /**
- * Relative to the process cwd (always `backend/`, whether running `src/server.ts` directly or a
- * bundled `api/index.js` on Vercel) rather than `import.meta.url` — a bundler inlines this file,
- * which would otherwise make the module's own location, and so this path, bundler-dependent.
+ * Found by probing from this module's own location rather than assuming a fixed depth or process
+ * cwd. Unbundled (`src/db/migrate.ts`, local dev/tests) it's two levels up; bundled into a single
+ * `api/index.js` (Vercel) it collapses to one level up — and on a Vercel *monorepo* deploy the
+ * process cwd is the repo root (`/var/task`), not the project's root directory (`/var/task/backend`
+ * here), so cwd-relative resolution silently finds nothing. Probing by existence handles all three.
  */
-export const MIGRATIONS_DIR = join(process.cwd(), 'migrations');
+function findMigrationsDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [join(here, '..', 'migrations'), join(here, '..', '..', 'migrations')]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return join(process.cwd(), 'migrations');
+}
+
+export const MIGRATIONS_DIR = findMigrationsDir();
 
 export interface MigrationFile {
   name: string;

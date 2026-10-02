@@ -5,9 +5,17 @@ import { cors } from "hono/cors";
 
 // src/db/migrate.ts
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-var MIGRATIONS_DIR = join(process.cwd(), "migrations");
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+function findMigrationsDir() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [join(here, "..", "migrations"), join(here, "..", "..", "migrations")]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return join(process.cwd(), "migrations");
+}
+var MIGRATIONS_DIR = findMigrationsDir();
 function readMigrations(dir = MIGRATIONS_DIR) {
   return readdirSync(dir).filter((f) => f.endsWith(".sql")).sort().map((name) => {
     const sql = readFileSync(join(dir, name), "utf8");
