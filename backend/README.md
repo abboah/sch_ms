@@ -20,6 +20,13 @@ npm test        # 27 tests, about 12 s
 ## How identity works
 The API sets `app.person_id` for each request (transaction-local) and runs as `app_user`. On Supabase, replace `app.person_id()` with a lookup from `auth.uid()` via `people.auth_user_id`, and map `app_user` to `authenticated`. Service-role work (webhooks, seeding) runs as the owner and bypasses RLS.
 
+## Deploying against a new Postgres (Neon, Supabase, RDS, …)
+After running migrations (`DATABASE_URL=<direct connection> node src/cli.ts migrate`), the connecting role must be granted membership in `app_user` once, or every authenticated request fails RLS with a generic 403 (`forbidden`, Postgres `42501`) — nothing else prompts for this step:
+```sql
+grant app_user to <connecting-role>;  -- e.g. neondb_owner on Neon, postgres on RDS
+```
+Deployed on Vercel Functions by bundling `src/vercel.ts` with esbuild (`npm run vercel-build`, see `vercel.json`) rather than letting Vercel's own TypeScript build step compile `.ts` files individually — this repo's explicit `.ts` import extensions survive bundling but not a per-file `tsc` compile. The entry point exports a **named** `fetch` (`export const fetch = app.fetch`), not a default export — Vercel's Node runtime silently mishandles a default-exported Web `fetch` handler as a Node-style `(req, res)` callback instead.
+
 ## Decisions worth knowing
 - **No hard deletes** on people, enrollments, attendance, invoices or payments: there is no DELETE policy. Withdrawal is `enrollments.status`.
 - **Closed terms lock teachers** (attendance, grades, assessments, homework). Admin can still correct attendance. Nobody in-app can edit grades after close; change that rule in `003_rls.sql` if admins should be able to.

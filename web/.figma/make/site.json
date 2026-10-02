@@ -1,5 +1,6 @@
 {
-  "description": "Streamline document management and collaboration for teams, enabling efficient file sharing, real-time editing, and secure storage in one platform.",
+  "title": "Homeroom",
+  "description": "Homeroom is a school management platform for Ghanaian schools — attendance, grading, fees, and parent-teacher communication in one place.",
   "robots": {
     "index": false
   },

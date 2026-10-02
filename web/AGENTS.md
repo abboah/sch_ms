@@ -1,6 +1,6 @@
-# figma-make-app
+# Homeroom web
 
-React + Vite + Tailwind CSS project running inside Figma Make.
+Admin, teacher and parent portals for Homeroom, a school management platform for Ghanaian schools (attendance, grading, fees, messaging). React + Vite + Tailwind CSS; it began as a Figma Make export.
 
 ## Development Server
 
