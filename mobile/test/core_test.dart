@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -226,6 +227,22 @@ void main() {
       final store = SessionStore(storage: MemorySessionStorage(), refresh: (_) async => null);
       final client = AuthedClient(session: store, inner: MockClient((_) async => throw http.ClientException('no route')));
       await expectLater(client.get(Uri.parse('http://x/y')), throwsA(isA<TransportFailure>()));
+    });
+  });
+
+  group('TimeoutClient', () {
+    test('a request that never responds fails instead of hanging forever', () async {
+      final client = TimeoutClient(
+        MockClient((_) => Completer<http.Response>().future), // never completes
+        timeout: const Duration(milliseconds: 20),
+      );
+      await expectLater(client.get(Uri.parse('http://x/y')), throwsA(isA<TimeoutException>()));
+    });
+
+    test('a normal response passes through unchanged', () async {
+      final client = TimeoutClient(MockClient((_) async => http.Response('{"ok":1}', 200)));
+      final res = await client.get(Uri.parse('http://x/y'));
+      expect(res.statusCode, 200);
     });
   });
 

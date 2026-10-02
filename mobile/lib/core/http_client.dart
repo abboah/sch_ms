@@ -1,7 +1,26 @@
+import 'dart:async';
+
 import 'package:http/http.dart';
 
 import 'failure.dart';
 import 'session.dart';
+
+/// Bounds every request so a stalled connection fails instead of hanging forever. Without this, a single
+/// stuck request — including the single-flight token refresh every other call waits behind — freezes the
+/// whole app's data fetching with no error and nothing to retry, since nothing ever resolves or throws.
+class TimeoutClient extends BaseClient {
+  TimeoutClient(this._inner, {this.timeout = const Duration(seconds: 20)});
+
+  final Client _inner;
+  final Duration timeout;
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) =>
+      _inner.send(request).timeout(timeout, onTimeout: () => throw TimeoutException('Request timed out after $timeout', timeout));
+
+  @override
+  void close() => _inner.close();
+}
 
 /// Wraps an HTTP client to add the access token to every request, retry once after a 401 with a refreshed token,
 /// and report transport failures as [TransportFailure] so callers can tell "offline" from "the server said no".

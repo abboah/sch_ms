@@ -11,7 +11,7 @@ import 'session.dart';
 
 /// Everything the app depends on is a provider, so tests can swap any piece (the HTTP client, storage, the clock).
 
-final httpClientProvider = Provider<http.Client>((ref) => http.Client());
+final httpClientProvider = Provider<http.Client>((ref) => TimeoutClient(http.Client()));
 
 /// Overridden in main() with the real instance, and in tests with an in-memory one.
 final prefsProvider = Provider<SharedPreferences>((ref) => throw UnimplementedError('prefsProvider must be overridden'));

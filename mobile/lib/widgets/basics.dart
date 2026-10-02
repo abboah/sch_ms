@@ -17,19 +17,15 @@ class HrCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    // Flutter cannot paint a rounded border whose sides differ in colour (it throws mid-paint and the card's
+    // contents never draw), so the border stays uniform and the accent rule is a bar laid over the top edge.
     final box = Container(
-      decoration: BoxDecoration(
-        color: t.raised,
-        borderRadius: BorderRadius.circular(3),
-        border: Border(
-          top: accentRule ? BorderSide(color: t.accent, width: 3) : BorderSide(color: t.rule),
-          left: BorderSide(color: t.rule),
-          right: BorderSide(color: t.rule),
-          bottom: BorderSide(color: t.rule),
-        ),
-      ),
-      padding: padding,
-      child: child,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(color: t.raised, borderRadius: BorderRadius.circular(3), border: Border.all(color: t.rule)),
+      child: Stack(fit: StackFit.passthrough, children: [
+        Padding(padding: padding, child: child),
+        if (accentRule) Positioned(top: 0, left: 0, right: 0, child: ColoredBox(color: t.accent, child: const SizedBox(height: 3))),
+      ]),
     );
     return onTap == null ? box : InkWell(onTap: onTap, borderRadius: BorderRadius.circular(3), child: box);
   }
@@ -133,11 +129,18 @@ class InfoBanner extends StatelessWidget {
       BannerTone.alert => (t.alert, t.alert.withValues(alpha: 0.10)),
       BannerTone.forest => (t.forest, t.forestSoft),
     };
+    // Uniform border plus an overlaid bar: see HrCard for why the sides cannot differ in colour.
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(3), border: Border(left: BorderSide(color: bar, width: 3), top: BorderSide(color: bar.withValues(alpha: 0.4)), right: BorderSide(color: bar.withValues(alpha: 0.4)), bottom: BorderSide(color: bar.withValues(alpha: 0.4)))),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(message, style: Theme.of(context).textTheme.bodyMedium), if (action != null) ...[const SizedBox(height: 6), action!]]),
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(3), border: Border.all(color: bar.withValues(alpha: 0.4))),
+      child: Stack(fit: StackFit.passthrough, children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(message, style: Theme.of(context).textTheme.bodyMedium), if (action != null) ...[const SizedBox(height: 6), action!]]),
+        ),
+        Positioned(top: 0, bottom: 0, left: 0, child: ColoredBox(color: bar, child: const SizedBox(width: 3))),
+      ]),
     );
   }
 }
